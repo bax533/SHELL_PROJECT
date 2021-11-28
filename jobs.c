@@ -29,6 +29,30 @@ static void sigchld_handler(int sig) {
 #ifdef STUDENT
   (void)status;
   (void)pid;
+  while((pid = waitpid(-1, &status, WNOHANG|WUNTRACED|WCONTINUED)) > 0){
+    for(int g = 0; g < njobmax; g++){
+      if (jobs[g].pgid == 0)
+        continue;
+      int jobstatus = FINISHED;
+      for(int i = 0; i < jobs[g].nproc; i++){
+        if(jobs[g].proc[i].pid == pid){
+          int stat = FINISHED;
+          if (WIFEXITED(status) || WIFSIGNALED(status))
+            stat = FINISHED;
+          else if (WIFSTOPPED(status))
+            stat = STOPPED;
+          else if (WIFCONTINUED(status))
+            stat = RUNNING;
+
+          jobs[g].proc[i].state = stat;
+          jobs[g].proc[i].exitcode = status;
+        }
+        if(jobs[g].proc[i].state != FINISHED) //if not every process has finished
+          jobstatus = jobs[g].proc[i].state; //remember its status
+      }
+      jobs[g].state = jobstatus; //set the job status according to its processes
+    }
+  }
 #endif /* !STUDENT */
   errno = old_errno;
 }
@@ -118,6 +142,10 @@ static int jobstate(int j, int *statusp) {
   /* TODO: Handle case where job has finished. */
 #ifdef STUDENT
   (void)exitcode;
+  if(state == FINISHED){
+    *statusp = exitcode(job);
+    deljob(job);
+  }
 #endif /* !STUDENT */
 
   return state;
@@ -143,6 +171,19 @@ bool resumejob(int j, int bg, sigset_t *mask) {
     /* TODO: Continue stopped job. Possibly move job to foreground slot. */
 #ifdef STUDENT
   (void)movejob;
+  Kill(jobs[j].pgid, SIGCONT);
+  msg("[%d] continue %s\n", j, jobcmd(j));
+
+  if(!bg){
+    movejob(j, FG);
+    int foo;
+    while(jobstate(FG, &foo) == STOPPED)//wait for every process to receive the signal
+    {   
+      Kill(jobs[FG].pgid, SIGCONT);
+      Sigsuspend(mask);
+    }
+    monitorjob(mask);
+  }
 #endif /* !STUDENT */
 
   return true;
@@ -156,6 +197,9 @@ bool killjob(int j) {
 
   /* TODO: I love the smell of napalm in the morning. */
 #ifdef STUDENT
+  Kill(jobs[j].pgid, SIGTERM);
+  if(jobs[j].state == STOPPED) //enable stopped processes to receive the signal
+    Kill(jobs[j].pgid, SIGCONT);
 #endif /* !STUDENT */
 
   return true;
@@ -170,6 +214,22 @@ void watchjobs(int which) {
       /* TODO: Report job number, state, command and exit code or signal. */
 #ifdef STUDENT
     (void)deljob;
+    if(jobs[j].state == which || which == ALL)
+    {
+      if(jobs[j].state == FINISHED)
+      {
+          if(WIFEXITED(exitcode(&jobs[j])))
+            msg("[%d] exited '%s', status=%d\n", j, jobs[j].command, WEXITSTATUS(exitcode(&jobs[j])));
+          else
+            msg("[%d] killed '%s' by signal %d\n", j, jobs[j].command, WTERMSIG(exitcode(&jobs[j])));
+      }
+      else if(jobs[j].state == STOPPED)
+          msg("[%d] suspended '%s'\n", j, jobs[j].command);
+      else if(jobs[j].state == RUNNING)
+          msg("[%d] running '%s'\n", j, jobs[j].command);
+    }
+    if(jobs[j].state == FINISHED)
+      deljob(&jobs[j]);
 #endif /* !STUDENT */
   }
 }
@@ -184,6 +244,28 @@ int monitorjob(sigset_t *mask) {
   (void)jobstate;
   (void)exitcode;
   (void)state;
+  pid_t old = Tcgetpgrp(tty_fd);
+  Tcsetpgrp(tty_fd, jobs[FG].pgid);
+  //Kill(jobs[FG].pgid, SIGCONT);
+  while(jobs[FG].state == STOPPED)
+    Sigsuspend(mask);
+  
+  while((state = jobstate(FG, &exitcode)) == RUNNING)
+    Sigsuspend(mask);
+  
+  Tcgetattr(tty_fd, &jobs[FG].tmodes);
+  if(state == STOPPED){
+    int j = allocjob();
+    jobs[j].pgid = 0;
+    jobs[j].state = FINISHED;
+    jobs[j].command = NULL;
+    jobs[j].proc = NULL;
+    jobs[j].nproc = 0;
+    movejob(FG, j);
+    msg("[%d] suspended %s\n", j, jobcmd(j));
+  }
+  Tcsetattr(tty_fd, TCSADRAIN, &shell_tmodes);
+  Tcsetpgrp(tty_fd, old);
 #endif /* !STUDENT */
 
   return exitcode;
@@ -214,6 +296,13 @@ void shutdownjobs(void) {
 
   /* TODO: Kill remaining jobs and wait for them to finish. */
 #ifdef STUDENT
+  for(int i = 0; i < njobmax; i++){
+    if(jobs[i].pgid != 0 && jobs[i].state != FINISHED){
+      killjob(i);
+      while(jobs[i].state != FINISHED)
+        sigsuspend(&mask);
+    }
+  }
 #endif /* !STUDENT */
 
   watchjobs(FINISHED);
