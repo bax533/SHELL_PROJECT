@@ -113,19 +113,6 @@ noreturn void external_command(char **argv) {
   if (!index(argv[0], '/') && path) {
     /* TODO: For all paths in PATH construct an absolute path and execve it. */
 #ifdef STUDENT
-    int errors = -1;
-    while (errors == -1) // while execve didn't work
-    {
-      size_t off = strcspn(path, ":"); // split path by ':'
-      char *singlePath = strndup(path, off);
-      if (singlePath == NULL || singlePath[0] == 0)
-        break;
-      strapp(&singlePath, "/");
-      strapp(&singlePath, argv[0]);               // construct absolute path
-      errors = execve(singlePath, argv, environ); // try to execve it
-      path = path + off + 1;
-      free(singlePath);
-    }
 #endif /* !STUDENT */
   } else {
     (void)execve(argv[0], argv, environ);
